@@ -61,7 +61,8 @@ static void printPerformanceCounts(std::vector<ov::ProfilingInfo> performanceDat
 OVAsrModel::~OVAsrModel() {
   if(encoder_infer_) {
     auto performanceMap = encoder_infer_->get_profiling_info();
-    printPerformanceCounts(performanceMap, std::cout, "CPU", true);
+    if(getenv("YI_DEBUG"))
+      printPerformanceCounts(performanceMap, std::cout, "CPU", true);
     // LOG(INFO) << "YITEST|SHARED_COUNT|" << encoder_infer_.use_count();
   }
 }

@@ -62,6 +62,9 @@ void AsrDecoder::Reset() {
   searcher_->Reset();
   feature_pipeline_->Reset();
   ctc_endpointer_->Reset();
+  encode_time_ = 0;
+  search_time_ = 0;
+  rescore_time_ = 0;
 }
 
 void AsrDecoder::ResetContinuousDecoding() {
@@ -107,9 +110,11 @@ DecodeState AsrDecoder::AdvanceDecoding(bool block) {
   std::vector<std::vector<float>> ctc_log_probs;
   model_->ForwardEncoder(chunk_feats, &ctc_log_probs);
   int forward_time = timer.Elapsed();
+  encode_time_ += forward_time;
   timer.Reset();
   searcher_->Search(ctc_log_probs);
   int search_time = timer.Elapsed();
+  search_time_ += search_time;
   VLOG(3) << "forward takes " << forward_time << " ms, search takes "
           << search_time << " ms";
   UpdateResult();
@@ -210,6 +215,7 @@ void AsrDecoder::AttentionRescoring() {
     return;
   }
 
+  Timer timer;
   std::vector<float> rescoring_score;
   model_->AttentionRescoring(hypotheses, opts_.reverse_weight,
                              &rescoring_score);
@@ -220,6 +226,8 @@ void AsrDecoder::AttentionRescoring() {
                        opts_.ctc_weight * result_[i].score;
   }
   std::sort(result_.begin(), result_.end(), DecodeResult::CompareFunc);
+  int decode_time = timer.Elapsed();
+  rescore_time_ += decode_time;
 }
 
 }  // namespace wenet

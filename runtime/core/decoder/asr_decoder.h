@@ -113,6 +113,9 @@ class AsrDecoder {
     return !result_.empty() && !result_[0].sentence.empty();
   }
 
+  int GetEncodeTime() const { return encode_time_;}
+  int GetSearchTime() const { return search_time_;}
+  int GetRescoreTime() const { return rescore_time_;}
   // This method is used for time benchmark
   int num_frames_in_current_chunk() const {
     return num_frames_in_current_chunk_;
@@ -156,6 +159,10 @@ class AsrDecoder {
 
   int num_frames_in_current_chunk_ = 0;
   std::vector<DecodeResult> result_;
+
+  int encode_time_ = 0;
+  int search_time_ = 0;
+  int rescore_time_ = 0;
 
  public:
   WENET_DISALLOW_COPY_AND_ASSIGN(AsrDecoder);
