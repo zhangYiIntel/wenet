@@ -6,21 +6,82 @@
 #include <algorithm>
 #include <memory>
 #include <utility>
+#include <sstream>
+#include <iostream>
+#include <iomanip>
 
 namespace wenet {
+static void printPerformanceCounts(std::vector<ov::ProfilingInfo> performanceData,
+                                          std::ostream& stream,
+                                          std::string deviceName,
+                                          bool bshowHeader = true) {
+    std::chrono::microseconds totalTime = std::chrono::microseconds::zero();
+    // Print performance counts
+    if (bshowHeader) {
+        stream << std::endl << "performance counts:" << std::endl << std::endl;
+    }
+    std::ios::fmtflags fmt(std::cout.flags());
+    for (const auto& it : performanceData) {
+        std::string toPrint(it.node_name);
+        const int maxLayerName = 30;
+
+        if (it.node_name.length() >= maxLayerName) {
+            toPrint = it.node_name.substr(0, maxLayerName - 4);
+            toPrint += "...";
+        }
+
+        stream << std::setw(maxLayerName) << std::left << toPrint;
+        switch (it.status) {
+        case ov::ProfilingInfo::Status::EXECUTED:
+            stream << std::setw(15) << std::left << "EXECUTED";
+            break;
+        case ov::ProfilingInfo::Status::NOT_RUN:
+            stream << std::setw(15) << std::left << "NOT_RUN";
+            break;
+        case ov::ProfilingInfo::Status::OPTIMIZED_OUT:
+            stream << std::setw(15) << std::left << "OPTIMIZED_OUT";
+            break;
+        }
+        stream << std::setw(30) << std::left << "layerType: " + std::string(it.node_type) + " ";
+        stream << std::setw(20) << std::left << "realTime: " + std::to_string(it.real_time.count());
+        stream << std::setw(20) << std::left << "cpu: " + std::to_string(it.cpu_time.count());
+        stream << " execType: " << it.exec_type << std::endl;
+        if (it.real_time.count() > 0) {
+            totalTime += it.real_time;
+        }
+    }
+    stream << std::setw(20) << std::left << "Total time: " + std::to_string(totalTime.count()) << " microseconds"
+           << std::endl;
+    std::cout << std::endl;
+    std::cout << "Full device name: " << deviceName << std::endl;
+    std::cout << std::endl;
+    std::cout.flags(fmt);
+}
 
 OVAsrModel::~OVAsrModel() {
-
+  if(encoder_infer_) {
+    auto performanceMap = encoder_infer_->get_profiling_info();
+    printPerformanceCounts(performanceMap, std::cout, "CPU", true);
+    // LOG(INFO) << "YITEST|SHARED_COUNT|" << encoder_infer_.use_count();
+  }
 }
 void OVAsrModel::InitEngineThreads(int num_threads) {
   core_->set_property("CPU", ov::inference_num_threads(num_threads));
+}
+
+inline std::string getShape(const ov::Shape& shape) {
+  std::string str_shape = "";
+  for(auto& dim : shape) {
+    str_shape += std::to_string(dim) + ",";
+  }
+  return str_shape;
 }
 
 void OVAsrModel::Read(const std::string& model_dir) {
   std::string encoder_ir_path = model_dir + "/encoder.xml";
   std::string rescore_ir_path = model_dir + "/decoder.xml";
   std::string ctc_ir_path = model_dir + "/ctc.xml";
-  
+
   try {
     std::shared_ptr<ov::Model> encoder_model = core_->read_model(encoder_ir_path);
     if (encoder_model) {
@@ -31,9 +92,14 @@ void OVAsrModel::Read(const std::string& model_dir) {
         LOG(INFO) << name;
         encoder_input_names_.push_back(name);
       }
-      encoder_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(encoder_model, "CPU")));
+      encoder_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(encoder_model, "CPU",
+        {{"CPU_RUNTIME_CACHE_CAPACITY","200"},
+          {"PERF_COUNT", "YES"}
+        }
+      )));
       encoder_infer_ = std::make_shared<ov::InferRequest>(std::move(encoder_compile_model_->create_infer_request()));
-      LOG(INFO) << "OVASRModel Reading" << encoder_ir_path << std::endl;
+      auto nthreads = encoder_compile_model_->get_property(ov::inference_num_threads);
+      LOG(INFO) << "OVASRModel Reading|" << encoder_ir_path << "|threads|" << nthreads << std::endl;
     }
     std::shared_ptr<ov::Model> ctc_model = core_->read_model(ctc_ir_path);
     if (ctc_model) {
@@ -189,14 +255,18 @@ void OVAsrModel::ForwardEncoderFunc(
   for (auto name : encoder_input_names_) {
     if (name == "chunk") {
       encoder_infer_->set_input_tensor(idx++, feats_ov);
+      LOG(INFO) << "YITEST|chunk|" << getShape(feats_ov.get_shape());
     } else if (name == "offset") {
       encoder_infer_->set_input_tensor(idx++, offset_ov);
+      LOG(INFO) << "YITEST|offset|" << getShape(offset_ov.get_shape());
     } else if (name == "required_cache_size") {
       encoder_infer_->set_input_tensor(idx++, required_cache_size_ov);
     } else if (name == "att_cache") {
       encoder_infer_->set_input_tensor(idx++, att_cache_ov_);
+      LOG(INFO) << "YITEST|att_cache|" << getShape(att_cache_ov_.get_shape());
     } else if (name == "cnn_cache") {
       encoder_infer_->set_input_tensor(idx++, cnn_cache_ov_);
+      LOG(INFO) << "YITEST|cnn_cache|" << getShape(cnn_cache_ov_.get_shape());
     } else if (name == "att_mask") {
       encoder_infer_->set_input_tensor(idx++, att_mask_ov);
     }
