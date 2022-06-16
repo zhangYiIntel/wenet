@@ -29,6 +29,7 @@
 #ifdef USE_TORCH
 #include "decoder/torch_asr_model.h"
 #endif
+#include "decoder/ov_asr_model.h"
 #include "frontend/feature_pipeline.h"
 #include "post_processor/post_processor.h"
 #include "utils/flags.h"
@@ -40,6 +41,10 @@ DEFINE_int32(num_threads, 1, "num threads for ASR model");
 DEFINE_string(model_path, "", "pytorch exported model path");
 // OnnxAsrModel flags
 DEFINE_string(onnx_dir, "", "directory where the onnx model is saved");
+
+// OVAsrModel flags
+DEFINE_int32(num_ov_threads, 1, "num threads for OpenVINO");
+DEFINE_string(openvino_dir, "", "directory where the OV model is saved");
 
 // FeaturePipelineConfig flags
 DEFINE_int32(num_bins, 80, "num mel bins for fbank feature");
@@ -130,6 +135,12 @@ std::shared_ptr<DecodeResource> InitDecodeResourceFromFlags() {
 #else
     LOG(FATAL) << "Please rebuild with cmake options '-DONNX=ON'.";
 #endif
+  } else if (!FLAGS_openvino_dir.empty()) {
+    LOG(INFO) << "Read OpenVINO model ";
+    auto model = std::make_shared<OVAsrModel>();
+    model->InitEngineThreads(FLAGS_num_ov_threads);
+    model->Read(FLAGS_openvino_dir);
+    resource->model = model;
   } else {
 #ifdef USE_TORCH
     LOG(INFO) << "Reading torch model " << FLAGS_model_path;

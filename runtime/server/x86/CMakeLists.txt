@@ -2,12 +2,13 @@ cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
 
 project(wenet VERSION 0.1)
 
-option(CXX11_ABI "whether to use CXX11_ABI libtorch" OFF)
+option(CXX11_ABI "whether to use CXX11_ABI libtorch" ON)
 option(FST_HAVE_BIN "whether to build fst binaries" OFF)
 option(BUILD_TESTING "whether to build unit test" ON)
 option(GRPC "whether to build with gRPC" OFF)
 option(TORCH "whether to build with Torch" ON)
 option(ONNX "whether to build with ONNX" OFF)
+option(OPENVINO "whether to build with ONNX" OFF)
 
 set(CMAKE_VERBOSE_MAKEFILE OFF)
 
