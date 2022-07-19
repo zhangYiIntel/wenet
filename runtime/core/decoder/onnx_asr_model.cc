@@ -28,10 +28,12 @@ namespace wenet {
 
 Ort::Env OnnxAsrModel::env_ = Ort::Env(ORT_LOGGING_LEVEL_WARNING, "");
 Ort::SessionOptions OnnxAsrModel::session_options_ = Ort::SessionOptions();
+Ort::SessionOptions OnnxAsrModel::enc_session_options_ = Ort::SessionOptions();
 
 void OnnxAsrModel::InitEngineThreads(int num_threads) {
   session_options_.SetIntraOpNumThreads(num_threads);
   session_options_.SetInterOpNumThreads(num_threads);
+  enc_session_options_.SetIntraOpNumThreads(num_threads);
 }
 
 void OnnxAsrModel::GetInputOutputInfo(
@@ -80,19 +82,19 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
   std::string encoder_onnx_path = model_dir + "/encoder.onnx";
   std::string rescore_onnx_path = model_dir + "/decoder.onnx";
   std::string ctc_onnx_path = model_dir + "/ctc.onnx";
-
+  enc_session_options_.EnableProfiling("/home/zhangyi7/onnx_profile");
   // 1. Load sessions
   try {
 #ifdef _MSC_VER
     encoder_session_ = std::make_shared<Ort::Session>(
-        env_, ToWString(encoder_onnx_path).c_str(), session_options_);
+        env_, ToWString(encoder_onnx_path).c_str(), enc_session_options_);
     rescore_session_ = std::make_shared<Ort::Session>(
         env_, ToWString(rescore_onnx_path).c_str(), session_options_);
     ctc_session_ = std::make_shared<Ort::Session>(
         env_, ToWString(ctc_onnx_path).c_str(), session_options_);
 #else
     encoder_session_ = std::make_shared<Ort::Session>(
-        env_, encoder_onnx_path.c_str(), session_options_);
+        env_, encoder_onnx_path.c_str(), enc_session_options_);
     rescore_session_ = std::make_shared<Ort::Session>(
         env_, rescore_onnx_path.c_str(), session_options_);
     ctc_session_ = std::make_shared<Ort::Session>(env_, ctc_onnx_path.c_str(),
@@ -287,11 +289,18 @@ void OnnxAsrModel::ForwardEncoderFunc(
       inputs.emplace_back(std::move(att_mask_ort));
     }
   }
-
-  std::vector<Ort::Value> ort_outputs = encoder_session_->Run(
+  Ort::AllocatorWithDefaultOptions allocator;
+  std::vector<Ort::Value> ort_outputs;
+  {
+    wenet::Timer timer;
+    ort_outputs = encoder_session_->Run(
       Ort::RunOptions{nullptr}, encoder_in_names_.data(), inputs.data(),
       inputs.size(), encoder_out_names_.data(), encoder_out_names_.size());
+    auto encoder_time = timer.Elapsed();
+    std::cout << "YITEST|encoder latency|" << encoder_time << std::endl;
+  }
 
+  encoder_session_->EndProfiling(allocator);
   offset_ += static_cast<int>(
       ort_outputs[0].GetTensorTypeAndShapeInfo().GetShape()[1]);
   att_cache_ort_ = std::move(ort_outputs[1]);
@@ -299,11 +308,16 @@ void OnnxAsrModel::ForwardEncoderFunc(
 
   std::vector<Ort::Value> ctc_inputs;
   ctc_inputs.emplace_back(std::move(ort_outputs[0]));
-
-  std::vector<Ort::Value> ctc_ort_outputs = ctc_session_->Run(
-      Ort::RunOptions{nullptr}, ctc_in_names_.data(), ctc_inputs.data(),
-      ctc_inputs.size(), ctc_out_names_.data(), ctc_out_names_.size());
-  encoder_outs_.push_back(std::move(ctc_inputs[0]));
+  std::vector<Ort::Value> ctc_ort_outputs;
+  {
+    // wenet::Timer timer;
+    ctc_ort_outputs = ctc_session_->Run(
+    Ort::RunOptions{nullptr}, ctc_in_names_.data(), ctc_inputs.data(),
+    ctc_inputs.size(), ctc_out_names_.data(), ctc_out_names_.size());
+    encoder_outs_.push_back(std::move(ctc_inputs[0]));
+    // auto encoder_time = timer.Elapsed();
+    // LOG(INFO) << "YITEST|encoder latency|" << encoder_time;
+  }
 
   float* logp_data = ctc_ort_outputs[0].GetTensorMutableData<float>();
   auto type_info = ctc_ort_outputs[0].GetTensorTypeAndShapeInfo();

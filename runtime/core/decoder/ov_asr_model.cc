@@ -58,11 +58,18 @@ static void printPerformanceCounts(std::vector<ov::ProfilingInfo> performanceDat
     std::cout.flags(fmt);
 }
 
+std::shared_ptr<ov::Core> OVAsrModel::core_ = std::make_shared<ov::Core>();
+
 OVAsrModel::~OVAsrModel() {
   if(encoder_infer_) {
     auto performanceMap = encoder_infer_->get_profiling_info();
-    if(getenv("YI_DEBUG"))
-      printPerformanceCounts(performanceMap, std::cout, "CPU", true);
+    if(getenv("OPENVINO_PROFILE")) {
+        printPerformanceCounts(performanceMap, std::cout, "CPU", true);
+        static int count = 0;
+        if(encoder_compile_model_)
+          ov::serialize(encoder_compile_model_->get_runtime_model(), "wenet_exec_graph_"+std::to_string(count++)+".xml");
+    }
+
     // LOG(INFO) << "YITEST|SHARED_COUNT|" << encoder_infer_.use_count();
   }
 }
@@ -94,8 +101,11 @@ void OVAsrModel::Read(const std::string& model_dir) {
         encoder_input_names_.push_back(name);
       }
       encoder_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(encoder_model, "CPU",
-        {{"CPU_RUNTIME_CACHE_CAPACITY","200"},
-          {"PERF_COUNT", "YES"}
+        {
+          // {"CPU_RUNTIME_CACHE_CAPACITY","200"},
+          // {"PERF_COUNT", "NO"},
+          {"PERFORMANCE_HINT", "THROUGHPUT"},
+          {"PERFORMANCE_HINT_NUM_REQUESTS", 1}
         }
       )));
       encoder_infer_ = std::make_shared<ov::InferRequest>(std::move(encoder_compile_model_->create_infer_request()));
@@ -104,12 +114,14 @@ void OVAsrModel::Read(const std::string& model_dir) {
     }
     std::shared_ptr<ov::Model> ctc_model = core_->read_model(ctc_ir_path);
     if (ctc_model) {
-      ctc_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(ctc_model, "CPU")));
+      ctc_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(ctc_model, "CPU", {          {"PERFORMANCE_HINT", "THROUGHPUT"},
+          {"PERFORMANCE_HINT_NUM_REQUESTS", 1}})));
       ctc_infer_ = std::make_shared<ov::InferRequest>(std::move(ctc_compile_model_->create_infer_request()));
     }
     std::shared_ptr<ov::Model> rescore_model = core_->read_model(rescore_ir_path);
     if (rescore_model) {
-      rescore_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(rescore_model, "CPU")));
+      rescore_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(rescore_model, "CPU", {          {"PERFORMANCE_HINT", "THROUGHPUT"},
+          {"PERFORMANCE_HINT_NUM_REQUESTS", 1}})));
       rescore_infer_ = std::make_shared<ov::InferRequest>(std::move(rescore_compile_model_->create_infer_request()));
     }
   } catch (std::exception const & e) {
@@ -145,7 +157,7 @@ void OVAsrModel::Read(const std::string& model_dir) {
 
 OVAsrModel::OVAsrModel(const OVAsrModel& other) {
   // metadatas
-  core_ = other.core_;
+  // core_ = other.core_;
   encoder_output_size_ = other.encoder_output_size_;
   num_blocks_ = other.num_blocks_;
   head_ = other.head_;
@@ -230,6 +242,7 @@ void OVAsrModel::ForwardEncoderFunc(
 
   // offset
   int64_t offset_int64 = static_cast<int64_t>(offset_);
+  // std::cout << "YITESTS|OFFSET|" << offset_int64 << std::endl;
   ov::Tensor offset_ov = ov::Tensor(ov::element::i64, ov::Shape(), &offset_int64);
   
   // required_cache_size
@@ -273,20 +286,30 @@ void OVAsrModel::ForwardEncoderFunc(
     }
   }
   try {
+    wenet::Timer timer;
     encoder_infer_->infer();
+    auto encoder_time = timer.Elapsed();
+    std::cout << "Y1ITEST|encoder latency|" << encoder_time << std::endl;
+
   } catch(std::exception& ex) {
-    LOG(INFO) << ex.what();
+    std::cout << ex.what();
   }
   const ov::Tensor& ov_output = encoder_infer_->get_output_tensor(0);
   offset_ += static_cast<int>(ov_output.get_shape()[1]);
-  att_cache_ov_ = encoder_infer_->get_output_tensor(1);
-  cnn_cache_ov_ = encoder_infer_->get_output_tensor(2);
+  att_cache_ov_ = std::move(encoder_infer_->get_output_tensor(1));
+  cnn_cache_ov_ = std::move(encoder_infer_->get_output_tensor(2));
   float* out = ov_output.data<float>();
   
   encoder_outs_.push_back(ov_output);
   //Please use set_input_tensor if you are set by index not by string.
-  ctc_infer_->set_input_tensor(0, ov_output);
-  ctc_infer_->infer();
+  {
+    // wenet::Timer timer;
+    ctc_infer_->set_input_tensor(0, ov_output);
+    ctc_infer_->infer();
+    // auto encoder_time = timer.Elapsed();
+    // LOG(INFO) << "YITEST|ctc latency|" << encoder_time;
+  }
+
   const ov::Tensor& ctc_output = ctc_infer_->get_output_tensor(); 
   float* logp_data = static_cast<float*>(ctc_output.data());
   int num_outputs = ctc_output.get_shape()[1];

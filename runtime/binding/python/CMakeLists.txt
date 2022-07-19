@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
 
 project(wenet VERSION 0.1)
 
-set(TORCH ON)  # Use torch for binding backend
+set(TORCH OFF)  # Use torch for binding backend
 set(ONNX OFF)  # ONNX is not used
 set(CXX11_ABI OFF)
 set(FST_HAVE_BIN OFF)

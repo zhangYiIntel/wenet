@@ -4,8 +4,9 @@
 
 #include <iomanip>
 #include <utility>
+#include <thread>
 
-#include "torch/script.h"
+// #include "torch/script.h"
 
 #include "decoder/params.h"
 #include "frontend/wav.h"
@@ -153,8 +154,8 @@ int main(int argc, char *argv[]) {
   //LOG(INFO) << "RTF: " << std::setprecision(4)
   std::cout <<"Feat RTF: "<< std::setprecision(4) << static_cast<float>(feat_extract_time) / total_waves_dur <<std::endl;
   std::cout << "Decoder RTF: " << std::setprecision(4) << static_cast<float>(total_decode_time) / total_waves_dur <<std::endl;
-  std::cout << "----Encode RTF: " << std::setprecision(4) << static_cast<float>(encode_time) / total_waves_dur <<std::endl;
-  std::cout << "----Search RTF: " << std::setprecision(4) << static_cast<float>(search_time) / total_waves_dur <<std::endl;
-  std::cout << "----Rescore RTF: " << std::setprecision(4) << static_cast<float>(rescore_time) / total_waves_dur <<std::endl;
+  std::cout << "----Encode RTF: " << std::setprecision(4) << static_cast<float>(encode_time) / total_waves_dur <<"|"<< encode_time <<std::endl;
+  std::cout << "----Search RTF: " << std::setprecision(4) << static_cast<float>(search_time) / total_waves_dur << "|" << search_time <<std::endl;
+  std::cout << "----Rescore RTF: " << std::setprecision(4) << static_cast<float>(rescore_time) / total_waves_dur << "|" << rescore_time <<std::endl;
   return 0;
 }

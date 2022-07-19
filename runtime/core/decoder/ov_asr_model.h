@@ -26,7 +26,7 @@ class OVAsrModel : public AsrModel {
   void InitEngineThreads(int num_threads = 1);
 
  public:
-  OVAsrModel() {core_ = std::make_shared<ov::Core>(); }
+  OVAsrModel()=default;
   ~OVAsrModel();
   OVAsrModel(const OVAsrModel& other);
   void Read(const std::string& model_dir);
@@ -49,7 +49,7 @@ class OVAsrModel : public AsrModel {
   int cnn_module_kernel_ = 0;
   int head_ = 0;
 
-  std::shared_ptr<ov::Core> core_;
+  static std::shared_ptr<ov::Core> core_;
   // sessions
   // NOTE(Mddct): The Env holds the logging state used by all other objects.
   //  One Env must be created before using any other Onnxruntime functionality.
