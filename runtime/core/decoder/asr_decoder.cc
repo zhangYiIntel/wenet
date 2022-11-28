@@ -82,6 +82,7 @@ void AsrDecoder::Rescoring() {
   Timer timer;
   AttentionRescoring();
   VLOG(2) << "Rescoring cost latency: " << timer.Elapsed() << "ms.";
+  decoder_time += timer.Elapsed();
 }
 
 DecodeState AsrDecoder::AdvanceDecoding(bool block) {
@@ -107,11 +108,13 @@ DecodeState AsrDecoder::AdvanceDecoding(bool block) {
   std::vector<std::vector<float>> ctc_log_probs;
   model_->ForwardEncoder(chunk_feats, &ctc_log_probs);
   int forward_time = timer.Elapsed();
+  encoder_time += forward_time;
   timer.Reset();
   searcher_->Search(ctc_log_probs);
   int search_time = timer.Elapsed();
   VLOG(3) << "forward takes " << forward_time << " ms, search takes "
           << search_time << " ms";
+  search_time += search_time;
   UpdateResult();
 
   if (state != DecodeState::kEndFeats) {

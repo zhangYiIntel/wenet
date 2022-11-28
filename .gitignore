@@ -46,3 +46,4 @@ runtime/core/grpc/wenet.pb.h
 # Clangd files
 .cache
 compile_commands.json
+runtime/server/x86/fc_base/*

@@ -40,6 +40,8 @@ std::shared_ptr<wenet::DecodeResource> g_decode_resource;
 std::ofstream g_result;
 std::mutex g_mutex;
 int g_total_waves_dur = 0;
+int g_total_encoder_time = 0;
+int g_total_decoder_time = 0;
 int g_total_decode_time = 0;
 
 void decode(std::pair<std::string, std::string> wav, bool warmup = false) {
@@ -120,6 +122,8 @@ void decode(std::pair<std::string, std::string> wav, bool warmup = false) {
     }
     g_total_waves_dur += wave_dur;
     g_total_decode_time += decode_time;
+    g_total_encoder_time += decoder.encoder_time;
+    g_total_decoder_time += decoder.decoder_time;
     g_mutex.unlock();
   }
 }
@@ -179,7 +183,9 @@ int main(int argc, char* argv[]) {
 
   LOG(INFO) << "Total: decoded " << g_total_waves_dur << "ms audio taken "
             << g_total_decode_time << "ms.";
-  LOG(INFO) << "RTF: " << std::setprecision(4)
-            << static_cast<float>(g_total_decode_time) / g_total_waves_dur;
+  std::cout << "RTF: " << std::setprecision(4)
+            << static_cast<float>(g_total_decode_time) / g_total_waves_dur << std::endl;
+  std::cout << "Encoder RTF: " <<  static_cast<float>(g_total_encoder_time / g_total_waves_dur) << "|" << g_total_encoder_time << std::endl;
+  std::cout << "Decoder RTF: " <<  static_cast<float>(g_total_decoder_time / g_total_waves_dur) << "|" << g_total_decoder_time << std::endl;
   return 0;
 }

@@ -128,6 +128,10 @@ class AsrDecoder {
   }
   const std::vector<DecodeResult>& result() const { return result_; }
 
+  int encoder_time = 0;
+  int decoder_time = 0;
+  int seatch_time = 0;
+
  private:
   DecodeState AdvanceDecoding(bool block = true);
   void AttentionRescoring();
