@@ -61,23 +61,35 @@ static void printPerformanceCounts(
   std::cout.flags(fmt);
 }
 
-std::shared_ptr<ov::Core> OVAsrModel::core_ = std::make_shared<ov::Core>();
+// std::shared_ptr<ov::Core> OVAsrModel::core_ = std::make_shared<ov::Core>();
 OVAsrModel::~OVAsrModel() {
   if (encoder_infer_) {
     if (getenv("OPENVINO_PROFILE")) {
       auto performanceMap = encoder_infer_->get_profiling_info();
       printPerformanceCounts(performanceMap, std::cout, "CPU", true);
       static int count = 0;
-      // if(encoder_compile_model_)
-      //   ov::serialize(encoder_compile_model_->get_runtime_model(),
-      //   "wenet_exec_graph_"+std::to_string(count++)+".xml");
+      if (encoder_compile_model_)
+        ov::serialize(encoder_compile_model_->get_runtime_model(),
+                      "encoder_exec_graph_" + std::to_string(count++) + ".xml");
+      if (ctc_compile_model_)
+        ov::serialize(ctc_compile_model_->get_runtime_model(),
+                      "ctc_exec_graph_" + std::to_string(count++) + ".xml");
+      if (rescore_compile_model_)
+        ov::serialize(rescore_compile_model_->get_runtime_model(),
+                      "decoder_exec_graph_" + std::to_string(count++) + ".xml");
     }
   }
 }
 
-void OVAsrModel::InitEngineThreads(int num_threads) {
+void OVAsrModel::InitEngineThreads(int core_number) {
+  core_ = std::make_shared<ov::Core>();
   if (core_) {
-    core_->set_property("CPU", ov::inference_num_threads(num_threads));
+    core_->set_property("CPU", ov::num_streams(core_number));
+    core_->set_property("CPU", ov::affinity(ov::Affinity::NONE));
+    core_->set_property("CPU", ov::inference_num_threads(1));
+    if (getenv("OPENVINO_PROFILE"))
+      core_->set_property("CPU", ov::enable_profiling(true));
+    std::cout << "OV|Stream num|" << core_number << std::endl;
   } else {
     std::cout << "OV core not init" << std::endl;
   }
@@ -89,20 +101,12 @@ void OVAsrModel::Read(const std::string& model_dir) {
   std::string ctc_ir_path = model_dir + "/ctc.xml";
   auto ov_version = ov::get_openvino_version();
   std::cout << "OPENVINO|VERSION|" << ov_version << std::endl;
+  if (getenv("OPENVINO_BF16")) {
+    enable_bf16 = true;
+  }
   try {
     std::shared_ptr<ov::Model> encoder_model =
         core_->read_model(encoder_ir_path);
-    std::map<std::string, ov::AnyMap> config;
-    config["CPU"] = {};
-    if (getenv("OPENVINO_PROFILE")) {
-      config["CPU"].emplace(ov::enable_profiling(true));
-    }
-    config["CPU"].emplace(
-        ov::hint::performance_mode(ov::hint::PerformanceMode::THROUGHPUT));
-    // set some configurations if any
-    for (auto&& item : config) {
-      core_->set_property(item.first, item.second);
-    }
     if (encoder_model) {
       if (encoder_model->has_rt_info("framework")) {
         auto metadata = encoder_model->get_rt_info<ov::AnyMap>("framework");
@@ -143,13 +147,25 @@ void OVAsrModel::Read(const std::string& model_dir) {
         std::cout << "Get Encoder input " << name << std::endl;
         encoder_input_names_.push_back(name);
       }
-
-      encoder_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(
-          core_->compile_model(encoder_model, "CPU",
-                               {{"PERF_COUNT", "NO"},
-                                {"PERFORMANCE_HINT", "THROUGHPUT"},
-                                {"PERFORMANCE_HINT_NUM_REQUESTS", 1},
-                                {"CPU_RUNTIME_CACHE_CAPACITY", 1024}})));
+      if (enable_bf16) {
+        ov::preprocess::PrePostProcessor preproc(encoder_model);
+        ov::preprocess::InputInfo& att_cache_input = preproc.input("att_cache");
+        ov::preprocess::InputInfo& cnn_cache_input = preproc.input("cnn_cache");
+        att_cache_input.tensor().set_element_type(ov::element::bf16);
+        cnn_cache_input.tensor().set_element_type(ov::element::bf16);
+        ov::preprocess::OutputInfo& att_cache_output =
+            preproc.output("r_att_cache");
+        ov::preprocess::OutputInfo& cnn_cache_output =
+            preproc.output("r_cnn_cache");
+        ov::preprocess::OutputInfo& output = preproc.output("output");
+        att_cache_output.tensor().set_element_type(ov::element::bf16);
+        cnn_cache_output.tensor().set_element_type(ov::element::bf16);
+        output.tensor().set_element_type(ov::element::bf16);
+        encoder_model = preproc.build();
+      }
+      encoder_compile_model_ =
+          std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(
+              encoder_model, "CPU", {{"INFERENCE_NUM_THREADS", 1}})));
       auto inputs = encoder_compile_model_->inputs();
       for (auto& input : inputs) {
         auto name = input.get_names().empty() ? "NONE" : input.get_any_name();
@@ -159,11 +175,16 @@ void OVAsrModel::Read(const std::string& model_dir) {
           std::move(encoder_compile_model_->create_infer_request()));
     }
     std::shared_ptr<ov::Model> ctc_model = core_->read_model(ctc_ir_path);
+    if (enable_bf16) {
+      ov::preprocess::PrePostProcessor ctc_preproc(ctc_model);
+      ov::preprocess::InputInfo& ctc_input = ctc_preproc.input(0);
+      ctc_input.tensor().set_element_type(ov::element::bf16);
+      ctc_model = ctc_preproc.build();
+    }
     if (ctc_model) {
-      ctc_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(
-          core_->compile_model(ctc_model, "CPU",
-                               {{"PERFORMANCE_HINT", "THROUGHPUT"},
-                                {"PERFORMANCE_HINT_NUM_REQUESTS", 1}})));
+      ctc_compile_model_ =
+          std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(
+              ctc_model, "CPU", {{"INFERENCE_NUM_THREADS", 1}})));
       ctc_infer_ = std::make_shared<ov::InferRequest>(
           std::move(ctc_compile_model_->create_infer_request()));
       auto inputs = ctc_compile_model_->inputs();
@@ -175,10 +196,9 @@ void OVAsrModel::Read(const std::string& model_dir) {
     std::shared_ptr<ov::Model> rescore_model =
         core_->read_model(rescore_ir_path);
     if (rescore_model) {
-      rescore_compile_model_ = std::make_shared<ov::CompiledModel>(std::move(
-          core_->compile_model(rescore_model, "CPU",
-                               {{"PERFORMANCE_HINT", "THROUGHPUT"},
-                                {"PERFORMANCE_HINT_NUM_REQUESTS", 1}})));
+      rescore_compile_model_ =
+          std::make_shared<ov::CompiledModel>(std::move(core_->compile_model(
+              rescore_model, "CPU", {{"INFERENCE_NUM_THREADS", 1}})));
       rescore_infer_ = std::make_shared<ov::InferRequest>(
           std::move(rescore_compile_model_->create_infer_request()));
       auto inputs = rescore_compile_model_->inputs();
@@ -209,11 +229,12 @@ void OVAsrModel::Read(const std::string& model_dir) {
 OVAsrModel::OVAsrModel(const OVAsrModel& other) {
   // metadatas
   // use static instead of copy
-  // core_ = other.core_;
+  core_ = other.core_;
   encoder_output_size_ = other.encoder_output_size_;
   num_blocks_ = other.num_blocks_;
   head_ = other.head_;
   cnn_module_kernel_ = other.cnn_module_kernel_;
+
   right_context_ = other.right_context_;
   subsampling_rate_ = other.subsampling_rate_;
   sos_ = other.sos_;
@@ -222,6 +243,7 @@ OVAsrModel::OVAsrModel(const OVAsrModel& other) {
   chunk_size_ = other.chunk_size_;
   num_left_chunks_ = other.num_left_chunks_;
   offset_ = other.offset_;
+
   encoder_inputs_map_ = other.encoder_inputs_map_;
   ctc_inputs_map_ = other.ctc_inputs_map_;
   rescore_inputs_map_ = other.rescore_inputs_map_;
@@ -229,10 +251,17 @@ OVAsrModel::OVAsrModel(const OVAsrModel& other) {
   ctc_compile_model_ = other.ctc_compile_model_;
   rescore_compile_model_ = other.rescore_compile_model_;
 
-  encoder_infer_ = other.encoder_infer_;
-  ctc_infer_ = other.ctc_infer_;
-  rescore_infer_ = other.rescore_infer_;
+  encoder_compile_model_ = other.encoder_compile_model_;
+  ctc_compile_model_ = other.ctc_compile_model_;
+  rescore_compile_model_ = other.rescore_compile_model_;
+  encoder_infer_ = std::make_shared<ov::InferRequest>(
+      std::move(encoder_compile_model_->create_infer_request()));
+  ctc_infer_ = std::make_shared<ov::InferRequest>(
+      std::move(ctc_compile_model_->create_infer_request()));
+  rescore_infer_ = std::make_shared<ov::InferRequest>(
+      std::move(rescore_compile_model_->create_infer_request()));
   encoder_input_names_.clear();
+  enable_bf16 = other.enable_bf16;
   for (auto name : other.encoder_input_names_)
     encoder_input_names_.push_back(name);
 }
@@ -240,14 +269,18 @@ OVAsrModel::OVAsrModel(const OVAsrModel& other) {
 std::shared_ptr<AsrModel> OVAsrModel::Copy() const {
   auto asr_model = std::make_shared<OVAsrModel>(*this);
   // Reset the inner states for new decoding
+  LOG(INFO) << "Copy Once";
   asr_model->Reset();
   return asr_model;
 }
 
 void OVAsrModel::Reset() {
   offset_ = 0;
-  encoder_outs_.clear();
+  rescore_input_.clear();
+  rescore_input_.reserve(65536);
+  encoder_len_ = 0;
   // Reset att_cache
+  auto type = enable_bf16 ? ov::element::bf16 : ov::element::f32;
   if (num_left_chunks_ > 0) {
     int required_cache_size = chunk_size_ * num_left_chunks_;
     offset_ = required_cache_size;
@@ -265,8 +298,7 @@ void OVAsrModel::Reset() {
     att_cache_.resize(1, 0.0);
     ov::Shape att_cache_shape = {num_blocks_, head_, 0,
                                  encoder_output_size_ / head_ * 2};
-    att_cache_ov_ =
-        ov::Tensor(ov::element::f32, att_cache_shape, att_cache_.data());
+    att_cache_ov_ = ov::Tensor(type, att_cache_shape, att_cache_.data());
   }
 
   // Reset cnn_cache
@@ -274,8 +306,7 @@ void OVAsrModel::Reset() {
       num_blocks_ * encoder_output_size_ * (cnn_module_kernel_ - 1), 0.0);
   ov::Shape cnn_cache_shape = {num_blocks_, 1, encoder_output_size_,
                                cnn_module_kernel_ - 1};
-  cnn_cache_ov_ =
-      ov::Tensor(ov::element::f32, cnn_cache_shape, cnn_cache_.data());
+  cnn_cache_ov_ = ov::Tensor(type, cnn_cache_shape, cnn_cache_.data());
 }
 
 void OVAsrModel::ForwardEncoderFunc(
@@ -328,21 +359,6 @@ void OVAsrModel::ForwardEncoderFunc(
   // set input tensor
   size_t idx = 0;
 
-  // for (auto name : encoder_input_names_) {
-  //   if (name == "chunk") {
-  //     encoder_infer_->set_input_tensor(idx++, feats_ov);
-  //   } else if (name == "offset") {
-  //     encoder_infer_->set_input_tensor(idx++, offset_ov);
-  //   } else if (name == "required_cache_size") {
-  //     encoder_infer_->set_input_tensor(idx++, required_cache_size_ov);
-  //   } else if (name == "att_cache") {
-  //     encoder_infer_->set_input_tensor(idx++, att_cache_ov_);
-  //   } else if (name == "cnn_cache") {
-  //     encoder_infer_->set_input_tensor(idx++, cnn_cache_ov_);
-  //   } else if (name == "att_mask") {
-  //     encoder_infer_->set_input_tensor(idx++, att_mask_ov);
-  //   }
-  // }
   for (auto name : encoder_input_names_) {
     if (name == "chunk") {
       encoder_infer_->set_tensor(encoder_inputs_map_[name], feats_ov);
@@ -360,21 +376,30 @@ void OVAsrModel::ForwardEncoderFunc(
     }
   }
   try {
-    // auto begin = std::chrono::high_resolution_clock::now();
     encoder_infer_->infer();
-    // auto end = std::chrono::high_resolution_clock::now();
-    // std::cout << "YITESTS|encoder latency|" <<
-    // std::chrono::duration_cast<std::chrono::milliseconds>(end -
-    // begin).count() << std::endl;
   } catch (std::exception& ex) {
     std::cout << ex.what() << std::endl;
   }
 
   const ov::Tensor ov_output = encoder_infer_->get_output_tensor(0);
+
   offset_ += static_cast<int>(ov_output.get_shape()[1]);
   att_cache_ov_ = encoder_infer_->get_output_tensor(1);
   cnn_cache_ov_ = encoder_infer_->get_output_tensor(2);
-  encoder_outs_.push_back(ov_output);
+
+  ov::Shape shape_info = ov_output.get_shape();
+  encoder_len_ += shape_info[1];
+  if (enable_bf16) {
+    ov::bfloat16* encoder_outs_data = ov_output.data<ov::bfloat16>();
+    for (int j = 0; j < ov_output.get_size(); j++) {
+      rescore_input_.emplace_back(encoder_outs_data[j]);
+    }
+  } else {
+    float* encoder_outs_data = ov_output.data<float>();
+    for (int j = 0; j < ov_output.get_size(); j++) {
+      rescore_input_.emplace_back(encoder_outs_data[j]);
+    }
+  }
   // Please use set_input_tensor if you are set by index not by string.
 
   // ctc_infer_->set_input_tensor(0, ov_output);
@@ -416,7 +441,7 @@ void OVAsrModel::AttentionRescoring(const std::vector<std::vector<int>>& hyps,
     return;
   }
   // No encoder output
-  if (encoder_outs_.size() == 0) {
+  if (encoder_len_ == 0) {
     return;
   }
 
@@ -428,18 +453,7 @@ void OVAsrModel::AttentionRescoring(const std::vector<std::vector<int>>& hyps,
     hyps_lens.emplace_back(static_cast<int64_t>(length));
   }
 
-  std::vector<float> rescore_input;
-  int encoder_len = 0;
-  for (int i = 0; i < encoder_outs_.size(); i++) {
-    float* encoder_outs_data = static_cast<float*>(encoder_outs_[i].data());
-    ov::Shape shape_info = encoder_outs_[i].get_shape();
-    for (int j = 0; j < encoder_outs_[i].get_size(); j++) {
-      rescore_input.emplace_back(encoder_outs_data[j]);
-    }
-    encoder_len += shape_info[1];
-  }
-
-  ov::Shape decode_input_shape = {1, encoder_len, encoder_output_size_};
+  ov::Shape decode_input_shape = {1, encoder_len_, encoder_output_size_};
 
   std::vector<int64_t> hyps_pad;
 
@@ -459,7 +473,7 @@ void OVAsrModel::AttentionRescoring(const std::vector<std::vector<int>>& hyps,
   }
 
   ov::Tensor decoder_input_tensor =
-      ov::Tensor(ov::element::f32, decode_input_shape, rescore_input.data());
+      ov::Tensor(ov::element::f32, decode_input_shape, rescore_input_.data());
   ov::Shape hyps_pad_shape = {num_hyps, max_hyps_len};
   ov::Tensor hyps_pad_tensor =
       ov::Tensor(ov::element::i64, hyps_pad_shape, hyps_pad.data());

@@ -16,7 +16,7 @@ namespace wenet {
 class OVAsrModel : public AsrModel {
  public:
   // Note: Do not call the InitEngineThreads function more than once.
-  void InitEngineThreads(int num_threads = 1);
+  void InitEngineThreads(int core_number = 1);
 
  public:
   OVAsrModel()=default;
@@ -41,8 +41,10 @@ class OVAsrModel : public AsrModel {
   int num_blocks_ = 0;
   int cnn_module_kernel_ = 0;
   int head_ = 0;
+  int encoder_len_ = 0;
+  std::vector<float> rescore_input_;
 
-  static std::shared_ptr<ov::Core> core_;
+  std::shared_ptr<ov::Core> core_;
   // sessions
   // NOTE(Mddct): The Env holds the logging state used by all other objects.
   //  One Env must be created before using any other Onnxruntime functionality.
@@ -67,6 +69,7 @@ class OVAsrModel : public AsrModel {
   std::map<std::string, ov::Output<const ov::Node>> encoder_inputs_map_;
   std::map<std::string, ov::Output<const ov::Node>> ctc_inputs_map_;
   std::map<std::string, ov::Output<const ov::Node>> rescore_inputs_map_;
+  bool enable_bf16 = false;
 };
 
 }  // namespace wenet
